@@ -323,7 +323,7 @@ def _da_update(state, log_alpha, log_eps0, target, t0=10., gamma=0.05, kappa=0.7
     accept = jnp.mean(jnp.clip(jnp.exp(log_alpha), 1e-10, 1.))
     eta    = 1. / (it + t0)
     H_bar  = (1. - eta) * state.H_bar + eta * (target - accept)
-    log_e  = log_eps0 - jnp.sqrt(it) / ((it + t0) * gamma) * H_bar
+    log_e  = log_eps0 - jnp.sqrt(it) / gamma * H_bar
     log_eb = it**(-kappa) * log_e + (1. - it**(-kappa)) * state.log_eps_bar
     return DAState(it, log_e, log_eb, H_bar)
 
@@ -440,8 +440,15 @@ def sampler_nuts(
 
     # --- initial step size ---
     if find_init_step_size:
+        _user_h = float(step_size)
         key, k = jax.random.split(key)
         step_size = _find_init_eps(k, state, log_prob_fn, _grad_U, step_size)
+        if verbose:
+            print(f"[nuts] find_init_step_size: step_size {_user_h:.4g} → "
+                  f"{float(step_size):.4g}\n"
+                  f"   (if the chain later stalls, set find_init_step_size=False "
+                  f"and pass your own step_size — the heuristic can overshoot "
+                  f"when the initial positions are under-dispersed vs the target.)")
     step_size = jnp.asarray(step_size)
     if verbose:
         print(f"sampling={sampling}  max_depth={max_tree_depth}"
@@ -506,9 +513,12 @@ def sampler_nuts(
         _step, (state, lp), skeys)
 
     samples = all_states[::thin_by]
+    n_chains = state.shape[0]
+    n_grad_evals = int(jnp.sum(all_ns)) * int(n_chains)   # per-step leapfrog × chains
     info = dict(acceptance_rate=float(jnp.mean(all_acc)),  # mean tree energy acceptance
                 final_step_size=float(final_eps),
-                mean_tree_depth=float(jnp.mean(jnp.log2(all_ns + 1))))
+                mean_tree_depth=float(jnp.mean(jnp.log2(all_ns + 1))),
+                n_grad_evals=n_grad_evals)
     if verbose:
         print(f"Done.  accept={info['acceptance_rate']:.3f}"
               f"  mean_steps={float(jnp.mean(all_ns)):.1f}")

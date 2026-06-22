@@ -14,8 +14,6 @@ Full DR acceptance correction ensures detailed balance.
 Adaptation (warmup only, toggleable):
   Heuristic initial step-size search   (find_init_step_size)
   Dual averaging → step size h         (adapt_step_size)
-
-Reference: https://arxiv.org/abs/2505.02987
 """
 
 import jax
@@ -41,7 +39,7 @@ def _da_update(state, accept_rate, log_h0, target, t0=10., gamma=0.05, kappa=0.7
     it    = state.iteration + 1
     eta   = 1. / (it + t0)
     H_bar = (1. - eta) * state.H_bar + eta * (target - accept_rate)
-    log_h = log_h0 - jnp.sqrt(it) / ((it + t0) * gamma) * H_bar
+    log_h = log_h0 - jnp.sqrt(it) / gamma * H_bar
     log_hb = it**(-kappa) * log_h + (1. - it**(-kappa)) * state.log_h_bar
     return DAState(it, log_h, log_hb, H_bar)
 
@@ -123,11 +121,15 @@ def _dr_accept_stage2(lp_x, lp_y2, q_xy2, q_y2x, q_xy1, q_y2y1, q_y1x, q_y1y2,
     log_num  = lp_y2 + q_y2x + q_y2y1
     log_den  = lp_x  + q_xy2 + q_xy1
 
-    # (1 - alpha1) terms
-    safe_a1_x  = jnp.where(alpha1_x_y1 > -1e-12, -jnp.inf,
-                            jnp.log1p(-jnp.exp(alpha1_x_y1)))
-    safe_a1_y2 = jnp.where(alpha1_y2_y1 > -1e-12, -jnp.inf,
-                            jnp.log1p(-jnp.exp(alpha1_y2_y1)))
+    # (1 - alpha1) terms.  When alpha is near 1 (la ≈ 0), naive log1p(-exp)
+    # gives -inf in BOTH the num and den paths, and -inf - (-inf) = NaN
+    # silently kills outer acceptance.  Floor to a large finite value so
+    # matching saturated terms cancel; only unbalanced saturations bite.
+    _LOG1M_FLOOR = -1e8
+    safe_a1_x  = jnp.where(alpha1_x_y1 > -1e-30, _LOG1M_FLOOR,
+                            jnp.log1p(-jnp.exp(jnp.minimum(alpha1_x_y1, -1e-30))))
+    safe_a1_y2 = jnp.where(alpha1_y2_y1 > -1e-30, _LOG1M_FLOOR,
+                            jnp.log1p(-jnp.exp(jnp.minimum(alpha1_y2_y1, -1e-30))))
 
     la = log_num - log_den + safe_a1_y2 - safe_a1_x
     return jnp.where(jnp.isfinite(la), jnp.minimum(0., la), -jnp.inf)
@@ -141,8 +143,12 @@ def _dr_accept_stage3(lp_x, lp_y3,
     log_num  = lp_y3 + q_y3x + q_y3y1 + q_y3y2
     log_den  = lp_x  + q_xy3 + q_xy1  + q_xy2
 
+    _LOG1M_FLOOR = -1e8
     def safe_log1m(a):
-        return jnp.where(a > -1e-12, -jnp.inf, jnp.log1p(-jnp.exp(a)))
+        # See note in _dr_accept_stage2.  Floor to a large finite value so
+        # matching saturated (a≈0) terms cancel in num/den.
+        return jnp.where(a > -1e-30, _LOG1M_FLOOR,
+                          jnp.log1p(-jnp.exp(jnp.minimum(a, -1e-30))))
 
     la = (log_num - log_den
           + safe_log1m(alpha1_y3_y1) - safe_log1m(alpha1_x_y1)
@@ -251,18 +257,27 @@ def sampler_gndr(
     if grad_fn is None:
         grad_fn = jax.grad(log_prob_fn)
 
-    # build Hessian function (Gauss-Newton preferred)
+    # build the proposal-metric function H(x).  Must be PSD at every x the
+    # chain visits — the Langevin proposal uses H^{-1} to scale drift and
+    # noise, and a non-PSD H corrupts the Cholesky decomposition silently.
     if hessian_fn is None:
         if residual_fn is not None:
-            # Gauss-Newton: H_GN(x) = J_r(x)^T @ J_r(x)
+            # Gauss-Newton: H_GN(x) = J_r(x)^T @ J_r(x), PSD by construction.
             def hessian_fn(x):
                 J = jax.jacobian(residual_fn)(x)    # (N_res, D)
                 return J.T @ J                       # (D, D)
         else:
-            # fallback: full Hessian (negated to get precision)
-            _full_hess = jax.hessian(log_prob_fn)
-            def hessian_fn(x):
-                return -_full_hess(x)
+            raise ValueError(
+                "sampler_gndr requires a state-dependent PSD metric H(x).  "
+                "Pass one of:\n"
+                "  residual_fn=r   with -log π(x) = ½ ‖r(x)‖²  (preferred — "
+                "gives the Gauss-Newton metric J_r^T J_r, PSD by construction).\n"
+                "  hessian_fn=H    with H(x) PSD by construction (e.g. via "
+                "eigenvalue clipping of -∇²log π).\n"
+                "There is no auto-fallback: -∇²log π is not PSD when log π "
+                "is locally non-log-concave (singular peaks, inflection "
+                "points, multimodal targets), and using it silently corrupts "
+                "the proposal.")
 
     # vectorise: (n_chains, D) -> (n_chains,) / (n_chains, D) / (n_chains, D, D)
     v_lp   = jax.vmap(log_prob_fn)
@@ -279,13 +294,18 @@ def sampler_gndr(
     lp = v_lp(x)
 
     if find_init_step_size:
+        _user_h = float(step_size)
         key, k_ = jax.random.split(key)
         grad_x0 = v_grad(x)
         L_x0 = _safe_cholesky(v_hess(x))
         step_size = _find_init_eps(k_, x, lp, grad_x0, L_x0, step_size, v_lp,
                                     target_accept)
         if verbose:
-            print(f"GN-DR:  init_eps={float(step_size):.4f}")
+            print(f"[gndr] find_init_step_size: step_size {_user_h:.4g} → "
+                  f"{float(step_size):.4g}\n"
+                  f"   (if the chain later stalls, set find_init_step_size=False "
+                  f"and pass your own step_size — the heuristic can overshoot "
+                  f"on targets the Gauss–Newton approximation misjudges.)")
 
     log_h0 = jnp.log(step_size)
     da = _da_init(log_h0)

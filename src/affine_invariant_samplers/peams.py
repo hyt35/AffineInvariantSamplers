@@ -192,7 +192,7 @@ def _da_update(state, log_alpha, log_eps0, target, t0=10., gamma=0.05, kappa=0.7
     accept = log_alpha.size / jnp.sum(1. / jnp.clip(jnp.exp(log_alpha), 1e-10, 1.))
     eta    = 1. / (it + t0)
     H_bar  = (1. - eta) * state.H_bar + eta * (target - accept)
-    log_e  = log_eps0 - jnp.sqrt(it) / ((it + t0) * gamma) * H_bar
+    log_e  = log_eps0 - jnp.sqrt(it) / gamma * H_bar
     log_eb = it**(-kappa) * log_e + (1. - it**(-kappa)) * state.log_eps_bar
     return DAState(it, log_e, log_eb, H_bar)
 
@@ -366,8 +366,15 @@ def sampler_peams(
 
     step_size = jnp.asarray(step_size, jnp.float32)
     if find_init_step_size:
+        _user_h = float(step_size)
         key, k = jax.random.split(key)
         step_size = _find_init_eps(k, g1, g2, log_prob_fn, _grad_U, step_size, h_walk_mams, L)
+        if verbose:
+            print(f"[peams] find_init_step_size: step_size {_user_h:.4g} → "
+                  f"{float(step_size):.4g}\n"
+                  f"   (if the chain later stalls, set find_init_step_size=False "
+                  f"and pass your own step_size — the heuristic can overshoot "
+                  f"when the initial ensemble is under-dispersed vs the target.)")
     if verbose:
         print(f"peams  metric={_metric}"
               + (f"  langevin={langevin}" if _use_langevin else "")

@@ -1,5 +1,5 @@
 """
-sampler_chess — standard ChEES HMC (no ensemble preconditioning), single file, JAX only.
+sampler_chees — standard ChEES HMC (no ensemble preconditioning), single file, JAX only.
 
 Standard HMC with identity mass matrix.
 Adaptation (warmup only, each independently toggleable):
@@ -80,7 +80,7 @@ def _da_update(state, log_alpha, log_eps0, target, t0=10., gamma=0.05, kappa=0.7
     accept = log_alpha.size / jnp.sum(1. / jnp.clip(jnp.exp(log_alpha), 1e-10, 1.))
     eta    = 1. / (it + t0)
     H_bar  = (1. - eta) * state.H_bar + eta * (target - accept)
-    log_e  = log_eps0 - jnp.sqrt(it) / ((it + t0) * gamma) * H_bar
+    log_e  = log_eps0 - jnp.sqrt(it) / gamma * H_bar
     log_eb = it**(-kappa) * log_e + (1. - it**(-kappa)) * state.log_eps_bar
     return DAState(it, log_e, log_eb, H_bar)
 
@@ -170,10 +170,10 @@ def _find_init_eps(key, positions, log_prob, grad_U, eps0):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# sampler_chess
+# sampler_chees
 # ──────────────────────────────────────────────────────────────────────────────
 
-def sampler_chess(
+def sampler_chees(
     log_prob_fn,
     initial_state,
     num_samples,
@@ -235,8 +235,15 @@ def sampler_chess(
 
     # --- initial step size ---
     if find_init_step_size:
+        _user_h = float(step_size)
         key, k = jax.random.split(key)
         step_size = _find_init_eps(k, state, log_prob_fn, _grad_U, step_size)
+        if verbose:
+            print(f"[chees] find_init_step_size: step_size {_user_h:.4g} → "
+                  f"{float(step_size):.4g}\n"
+                  f"   (if the chain later stalls, set find_init_step_size=False "
+                  f"and pass your own step_size — the heuristic can overshoot "
+                  f"when the initial positions are under-dispersed vs the target.)")
     step_size = jnp.asarray(step_size)
     if verbose:
         print(f"metric=euclidean  init_eps={float(step_size):.4f}"
@@ -342,7 +349,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("ChEES HMC")
     print("=" * 60)
-    samples, info = sampler_chess(log_prob, init, num_samples=2000, warmup=500, seed=123)
+    samples, info = sampler_chees(log_prob, init, num_samples=2000, warmup=500, seed=123)
     print(f"mean : {jnp.mean(samples, axis=(0,1))}")
     print(f"cov  :\n{jnp.cov(samples.reshape(-1, dim), rowvar=False)}")
     print(f"info : {info}")

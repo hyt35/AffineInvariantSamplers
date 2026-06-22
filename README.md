@@ -150,9 +150,18 @@ would close the gap.
 - **Multiscale geometry** (funnel-like) — delayed rejection:
   `sampler_ensemble_dr_stretch` (gradient-free) or `sampler_gndr`
   (gradient + Gauss–Newton Hessian).
+- **Light-tailed targets** (e.g. `exp(−|x|^p)` with p > 2, where vanilla
+  MALA can lose geometric ergodicity) — `sampler_gndr` /
+  `sampler_gndr_full`; the GN preconditioner caps tail drift and DR
+  raises acceptance toward 1 with depth.
 - **High dimension** — gradient-based ensemble HMC (same four above);
   use `sampler_kalman_move` if you have no gradient and the target is
-  approximately Gaussian.
+  approximately Gaussian.  For very high dimension where the
+  Metropolis-correction cost dominates, the unadjusted variant
+  `sampler_pickles_unadjusted` scales much better — see
+  [Convergence of Unadjusted Langevin in High Dimensions: Delocalization
+  of Bias (CPAM, 2026)](https://onlinelibrary.wiley.com/doi/10.1002/cpa.70032)
+  for the dimensional-scaling analysis.
 
 ## Usage essentials
 
@@ -163,7 +172,7 @@ variants take single-point form:
 
 | Form                                     | Samplers |
 |------------------------------------------|----------|
-| batched  `(n_chains, D) → (n_chains,)`   | `sampler_walk`, `sampler_stretch`, `sampler_side`, `sampler_ensemble_dr_{stretch,side}`, `sampler_langevin_walk`, `sampler_kalman_move`, `sampler_kalman_dr`, `sampler_nuts`, `sampler_peaches`, `sampler_peams`, `sampler_peanuts`, `sampler_pickles`, `sampler_chess`, `sampler_aldi`, `sampler_pickles_unadjusted` |
+| batched  `(n_chains, D) → (n_chains,)`   | `sampler_walk`, `sampler_stretch`, `sampler_side`, `sampler_ensemble_dr_{stretch,side}`, `sampler_langevin_walk`, `sampler_kalman_move`, `sampler_kalman_dr`, `sampler_nuts`, `sampler_peaches`, `sampler_peams`, `sampler_peanuts`, `sampler_pickles`, `sampler_chees`, `sampler_aldi`, `sampler_pickles_unadjusted` |
 | single-point  `(D,) → scalar`            | `sampler_malt`, `sampler_mams`, `sampler_gndr`  |
 
 ### Gradients
@@ -227,20 +236,117 @@ samples, info = sampler_xxx(
     initial_state,                # (n_chains, D)
     num_samples,
     warmup          = 1000,
-    step_size       = <default>,
+    step_size       = <default>,  # ← the main knob; see note below
     seed            = 0,
     verbose         = True,
     # sampler-specific kwargs (target_accept, L, gamma, a, chees_metric, ...)
-    find_init_step_size = True,   # heuristic initial step-size search
+    find_init_step_size = True,   # heuristic doubling/halving at initial positions
     adapt_step_size     = True,   # dual averaging during warmup
     # adapt_L / adapt_gamma / adapt_a where applicable
 )
 ```
 
-If `find_init_step_size` picks a bad starting step (rare, but possible
-when the initial ensemble is under-dispersed relative to the target),
-set `find_init_step_size=False` and supply a `step_size` of your own;
-dual averaging will refine it during warmup.
+### Picking `step_size` — the one knob that matters
+
+**A good initial `step_size` is the single most important thing to get
+right.**  Dual averaging (`adapt_step_size=True`) then refines it during
+warmup, but it can only recover from a reasonable starting point — if
+you're off by ≥10× it may not catch up, and the chain will be biased or
+diverge.
+
+By default `find_init_step_size=True` runs a short doubling/halving
+search at the initial walker positions and prints what it landed on, e.g.:
+
+```
+[peaches] find_init_step_size: step_size 0.01 → 0.0123
+   (if the chain later stalls, set find_init_step_size=False and pass
+    your own step_size — the heuristic can overshoot when the initial
+    ensemble is under-dispersed vs the target.)
+```
+
+Read that line whenever you run a sampler.  If the tuned value looks
+reasonable and the chain's reported `acceptance_rate` is in the
+0.3–0.9 range, you're fine.  If the tuned value blows up (10× your
+input) or the chain stalls at low acceptance, the heuristic has latched
+onto a tiny initial ensemble covariance — disable it and pass a
+`step_size` you pick yourself:
+
+```python
+sampler_peaches(log_prob, init, ...,
+                find_init_step_size=False, step_size=<your choice>)
+```
+
+**Rule of thumb:** `step_size` is a user choice.  The heuristic is
+a convenience, not a black-box auto-pick — always glance at the printed
+`find_init_step_size:` line.
+
+**Note on DR samplers and step-size "pollution":** for `sampler_gndr`
+/ `sampler_gndr_full`, a too-large `h_0` doesn't just hurt the first
+proposal — it pollutes the entire DR ladder.  Each early retry at
+`h_0 · shrink^k` is still too large to be accepted, wasting compute
+and slightly biasing the DR `(1 − α_inner)` corrections.  DR only
+rescues the chain once the ladder reaches a step small enough for the
+current geometry.  Two mitigations:
+
+1. **Pick `h_0` directly** rather than relying on `find_init_step_size`
+   (which only targets stage-1 acceptance and can land on values too
+   large for the chain's actual scale).
+2. **Use aggressive `shrink`** (e.g. `0.2` instead of the default `0.5`).
+   The ladder cuts faster, so a useful step is reached at a smaller
+   `n_try`.  See `examples/example_light_tail_gndr_identity_precond.py`
+   for a worked example where `shrink=0.2` rescues a 3× oversized `h_0`
+   at `n_try=10`; `shrink=0.5` would need many more stages.
+
+### Picking `init` — a good starting ensemble
+
+Every sampler here takes an ensemble `init` of shape `(n_chains, D)`.  A
+good starting ensemble is concentrated on the bulk of the target and
+dispersed on roughly the right scale — if it is under-dispersed
+(e.g. `N(0, I)` on a target with variance ~100), `find_init_step_size`
+latches onto the tiny ensemble covariance and picks a step size that is
+too large.
+
+The `affine_invariant_samplers.init` module provides three tiers of
+helpers for targets where a MAP exists:
+
+```python
+from affine_invariant_samplers import (
+    find_map,                 # Tier 1: single-start BFGS
+    find_map_restarts,        # Tier 2: multi-start BFGS (vmap)
+    init_ensemble_from_map,   # Tier 3: MAP + Laplace → ensemble
+)
+
+# Tier 3 is usually what you want:
+init, map_res = init_ensemble_from_map(
+    log_prob_single, x0=jnp.zeros(D),
+    n_chains=100, seed=0, n_restarts=8, verbose=True,
+)
+samples, info = sampler_peaches(log_prob, init, n_samp, warmup=warmup)
+```
+
+Tiers 1 and 2 return just the MAP point — cheap.  Tier 3 additionally
+computes the Hessian at the MAP and draws an ensemble from the Laplace
+Gaussian `N(x_MAP, H^{-1})`; this costs one Hessian (O(D²) memory,
+O(D³) decomposition) but gives an ensemble automatically matched to the
+local curvature.  See `examples/example_init_rosenbrock.py` for a side-
+by-side comparison.
+
+**Caveats.**
+
+* **Tier 3 can be catastrophically wrong even when the MAP exists.**
+  Neal's funnel has MAP at `(v*, x*) = (-9d/2, 0)` and BFGS finds it in
+  a handful of steps — but at that point the Hessian for `x` is
+  `exp(-v*)·I` (~e¹⁸ in 5-D), so Laplace predicts `std(x_i) ≈ 10⁻³`
+  whereas the true marginal std is `≈ 9.5`.  Starting chains in that
+  bubble strands them ~10³σ from typical mass.  Use Tiers 1 or 2 on
+  funnel-like targets and hand the MAP to an isotropic or
+  dispersed init yourself.
+* **Multimodal targets.**  MAP seeding concentrates chains in one
+  mode — use many restarts and inspect the spread, or fall back to a
+  dispersed random init.
+* **Non-smooth potentials.**  BFGS needs
+  differentiability; targets with cusps or sharp walls will mis-
+  step. 
 
 ## Samplers reference
 
@@ -261,15 +367,21 @@ dual averaging will refine it during warmup.
 | `sampler_langevin_walk`  | Affine-invariant Langevin walk (MALA in the complement span).|
 | `sampler_kalman_move`    | Ensemble Kalman move (derivative-free drift from forward G). |
 | `sampler_kalman_dr`      | Multi-stage delayed-rejection Kalman move.                   |
-| `sampler_gndr`           | Gauss–Newton proposal Langevin with multi-stage DR.          |
+| `sampler_gndr`           | Gauss–Newton proposal Langevin with multi-stage DR (≤3).     |
+| `sampler_gndr_full`      | Same proposal, **arbitrary-depth** DR.                       |
 
-### HMC family (single chain, batched)
+### Non-affine-invariant samplers (in `samplers/`)
 
-| Function        | Idea                                                              |
-|-----------------|-------------------------------------------------------------------|
-| `sampler_malt`  | Metropolis Adjusted Langevin Trajectories (BABO+O).               |
-| `sampler_mams`  | Metropolis Adjusted Microcanonical Sampler (ChEES-L or τ-tuned).  |
-| `sampler_nuts`  | Classical NUTS with dual averaging.                               |
+Standard HMC-family samplers without ensemble preconditioning.  Live in
+the separate `samplers` package; re-exported from
+`affine_invariant_samplers` for convenience.
+
+| Function         | Idea                                                              |
+|------------------|-------------------------------------------------------------------|
+| `sampler_malt`   | Metropolis Adjusted Langevin Trajectories (BABO+O).               |
+| `sampler_mams`   | Metropolis Adjusted Microcanonical Sampler (ChEES-L or τ-tuned).  |
+| `sampler_nuts`   | Classical NUTS with dual averaging.                               |
+| `sampler_chees`  | Standard HMC with joint dual-averaging + ChEES length tuning.     |
 
 ### Ensemble HMC / microcanonical / NUTS
 
@@ -279,7 +391,6 @@ dual averaging will refine it during warmup.
 | `sampler_peams`    | **PEAMS**   — ensemble-preconditioned microcanonical HMC.               |
 | `sampler_peanuts`  | **PEANUTS** — ensemble-preconditioned NUTS.                             |
 | `sampler_pickles`  | **PICKLES** — parallel interacting covariance-preconditioned kinetic Langevin. |
-| `sampler_chess`    | Standard HMC with joint dual-averaging + ChEES length tuning.           |
 
 ### Unadjusted Langevin (ensemble / interacting)
 
@@ -346,12 +457,18 @@ Pure matplotlib — no `corner` dependency.
 | `example_rosenbrock.py`                | 10-D Rosenbrock, (a, b)=(1, 100)    | `peaches`, `pickles`, `peams`                       |
 | `example_rosenbrock_unadjusted.py`     | 10-D Rosenbrock, (a, b)=(1, 100)    | `aldi`, `pickles_unadjusted`                        |
 | `example_funnel.py`                    | 5-D Neal's funnel                   | `stretch`, `stretch-DR`, `gndr`                     |
+| `example_init_rosenbrock.py`           | 10-D Rosenbrock, (a, b)=(1, 100)    | `find_map`, `find_map_restarts`, `init_ensemble_from_map` + `peaches` |
+| `example_light_tail_gndr.py`           | 5-D quartic, log π = -‖x‖⁴/4        | `sampler_gndr_full` (GN metric) swept over n_try    |
+| `example_light_tail_gndr_identity_precond.py` | 3-D quartic, log π = -‖x‖⁴/4 | `sampler_gndr_full` with H = I (= DR-for-MALA): n_try=1 fails, n_try≥2 rescues |
 
 ```bash
 python examples/example_gaussian.py
 python examples/example_rosenbrock.py
 python examples/example_rosenbrock_unadjusted.py
 python examples/example_funnel.py
+python examples/example_init_rosenbrock.py
+python examples/example_light_tail_gndr.py
+python examples/example_light_tail_gndr_identity_precond.py
 ```
 
 Each script reports mean/variance accuracy, acceptance rate, minimum

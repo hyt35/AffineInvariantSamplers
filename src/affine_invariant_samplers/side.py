@@ -33,7 +33,7 @@ def _da_update(state, accept_rate, log_h0, target, t0=10., gamma=0.05, kappa=0.7
     it    = state.iteration + 1
     eta   = 1. / (it + t0)
     H_bar = (1. - eta) * state.H_bar + eta * (target - accept_rate)
-    log_h = log_h0 - jnp.sqrt(it) / ((it + t0) * gamma) * H_bar
+    log_h = log_h0 - jnp.sqrt(it) / gamma * H_bar
     log_hb = it**(-kappa) * log_h + (1. - it**(-kappa)) * state.log_h_bar
     return DAState(it, log_h, log_hb, H_bar)
 
@@ -144,11 +144,17 @@ def sampler_side(
     # DA tunes log(gamma_scale) where gamma_scale = gamma / sqrt(D)
     gamma_scale0 = jnp.asarray(gamma / jnp.sqrt(dim), jnp.float32)
     if find_init_gamma:
+        _user_gamma = float(gamma)
         key, k_ = jax.random.split(key)
         gamma_scale0 = _find_init_gs(k_, g1, g2, lp1, lp2, gamma_scale0,
                                       log_prob_fn, W, target_accept)
         if verbose:
-            print(f"Side move:  init_gamma={float(gamma_scale0 * jnp.sqrt(dim)):.4f}")
+            _tuned_gamma = float(gamma_scale0 * jnp.sqrt(dim))
+            print(f"[side] find_init_gamma: gamma {_user_gamma:.4g} → "
+                  f"{_tuned_gamma:.4g}\n"
+                  f"   (if the chain later stalls, set find_init_gamma=False "
+                  f"and pass your own gamma — the heuristic can overshoot "
+                  f"when the initial ensemble is under-dispersed vs the target.)")
     log_gs0 = jnp.log(gamma_scale0)
     da = _da_init(log_gs0)
 

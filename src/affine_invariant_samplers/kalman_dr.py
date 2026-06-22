@@ -41,7 +41,7 @@ def _da_update(state, accept_rate, log_h0, target, t0=10., gamma=0.05, kappa=0.7
     it    = state.iteration + 1
     eta   = 1. / (it + t0)
     H_bar = (1. - eta) * state.H_bar + eta * (target - accept_rate)
-    log_h = log_h0 - jnp.sqrt(it) / ((it + t0) * gamma) * H_bar
+    log_h = log_h0 - jnp.sqrt(it) / gamma * H_bar
     log_hb = it**(-kappa) * log_h + (1. - it**(-kappa)) * state.log_h_bar
     return DAState(it, log_h, log_hb, H_bar)
 
@@ -401,12 +401,17 @@ def sampler_kalman_dr(
 
     step_size = jnp.asarray(step_size, jnp.float32)
     if find_init_step_size:
+        _user_h = float(step_size)
         key, k_ = jax.random.split(key)
         step_size = _find_init_eps(k_, g1, g2, lp1, lp2, step_size,
                                     forward_fn, M, log_prob_fn, W, k, n_try,
                                     target_accept)
         if verbose:
-            print(f"Kalman-DR:  init_eps={float(step_size):.4f}")
+            print(f"[kalman_dr] find_init_step_size: step_size {_user_h:.4g} → "
+                  f"{float(step_size):.4g}\n"
+                  f"   (if the chain later stalls, set find_init_step_size=False "
+                  f"and pass your own step_size — the heuristic can overshoot "
+                  f"when the initial ensemble is under-dispersed vs the target.)")
     log_h0 = jnp.log(step_size)
     da = _da_init(log_h0)
 

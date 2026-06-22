@@ -170,7 +170,7 @@ def _da_update(state, accept_rate, log_eps0, target, t0=10., gamma_da=0.05, kapp
     it    = state.iteration + 1
     eta   = 1. / (it + t0)
     H_bar = (1. - eta) * state.H_bar + eta * (target - accept_rate)
-    log_e = log_eps0 - jnp.sqrt(it) / ((it + t0) * gamma_da) * H_bar
+    log_e = log_eps0 - jnp.sqrt(it) / gamma_da * H_bar
     log_eb = it**(-kappa) * log_e + (1. - it**(-kappa)) * state.log_eps_bar
     return DAState(it, log_e, log_eb, H_bar)
 
@@ -394,8 +394,15 @@ def sampler_mams(
     # --- initial step size ---
     step_size = jnp.asarray(step_size, jnp.float32)
     if find_init_step_size:
+        _user_h = float(step_size)
         key, k = jax.random.split(key)
         step_size = _find_init_eps(k, state, L_fn, grad_L_fn, step_size, dim, L)
+        if verbose:
+            print(f"[mams] find_init_step_size: step_size {_user_h:.4g} → "
+                  f"{float(step_size):.4g}\n"
+                  f"   (if the chain later stalls, set find_init_step_size=False "
+                  f"and pass your own step_size — the heuristic can overshoot "
+                  f"when the initial positions are under-dispersed vs the target.)")
 
     # --- compute c1 for OBABO ---
     # c1 = exp(-eps / L_partial) = exp(-eps / (langevin * L * eps)) = exp(-1 / (langevin * L))

@@ -31,18 +31,17 @@ from .langevin_walk import sampler_langevin_walk
 from .kalman_move   import sampler_kalman_move
 from .kalman_dr     import sampler_kalman_dr
 from .gndr          import sampler_gndr
+from .gndr_full     import sampler_gndr_full
 
-# ─── HMC-family (single chain, batched) ─────────────────────────────────────
-from .malt import sampler_malt
-from .mams import sampler_mams
-from .nuts import sampler_nuts
+# ─── HMC-family (single chain, batched) — moved to top-level `samplers` pkg
+from samplers import sampler_malt, sampler_mams, sampler_nuts
 
 # ─── Ensemble HMC / microcanonical / NUTS ───────────────────────────────────
 from .peaches import sampler_peaches
 from .peams   import sampler_peams
 from .peanuts import sampler_peanuts
 from .pickles import sampler_pickles
-from .chess   import sampler_chess
+from samplers import sampler_chees
 
 # ─── Unadjusted Langevin dynamics (ensemble / interacting) ──────────────────
 from .aldi               import sampler_aldi
@@ -53,6 +52,13 @@ from .diagnostics import (
     autocorrelation,
     integrated_autocorr_time,
     effective_sample_size,
+)
+
+# ─── Initialization helpers (MAP, Laplace-seeded ensemble) ───────────────────
+from .init import (
+    find_map,
+    find_map_restarts,
+    init_ensemble_from_map,
 )
 
 __all__ = [
@@ -67,6 +73,7 @@ __all__ = [
     "sampler_kalman_move",
     "sampler_kalman_dr",
     "sampler_gndr",
+    "sampler_gndr_full",
     # HMC-family
     "sampler_malt",
     "sampler_mams",
@@ -76,7 +83,7 @@ __all__ = [
     "sampler_peams",
     "sampler_peanuts",
     "sampler_pickles",
-    "sampler_chess",
+    "sampler_chees",
     # unadjusted Langevin
     "sampler_aldi",
     "sampler_pickles_unadjusted",
@@ -84,6 +91,10 @@ __all__ = [
     "autocorrelation",
     "integrated_autocorr_time",
     "effective_sample_size",
+    # initialization
+    "find_map",
+    "find_map_restarts",
+    "init_ensemble_from_map",
 ]
 
 __version__ = "0.1.0"
