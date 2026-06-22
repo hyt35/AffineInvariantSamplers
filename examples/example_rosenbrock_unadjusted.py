@@ -36,6 +36,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
+sys.path.append("../src")
 
 from affine_invariant_samplers import (
     sampler_aldi,
@@ -71,11 +73,15 @@ def _report(name, samples, a, info, elapsed):
     me, ve  = float(jnp.mean(xe)), float(jnp.mean(jnp.var(xe, axis=0)))
     mo, vo  = float(jnp.mean(xo)), float(jnp.mean(jnp.var(xo, axis=0)))
     ess     = effective_sample_size(samples)
+    ss = info.get("step_size")
+    if ss is None:
+        ss = info.get("final_step_size")
+
     grads   = info.get("n_grad_evals")
     grads_s = f"{grads:>10d}" if grads is not None else f"{'–':>10s}"
     print(f"  {name:<24s}  x_e mean={me:5.2f} var={ve:5.2f}   "
           f"x_o mean={mo:5.2f} var={vo:5.2f}   "
-          f"min_ESS={float(ess.min()):7.1f}   grad_evals={grads_s}   "
+          f"min_ESS={float(ess.min()):7.1f}   grad_evals={grads_s}   ss={ss} "
           f"time={elapsed:5.1f}s")
 
 
@@ -87,8 +93,8 @@ if __name__ == "__main__":
     dim      = 10
     a, b     = 1.0, 100.0
     n_chains = 100
-    n_samp   = 10000
-    warmup   = 2000
+    n_samp   = 50000
+    warmup   = 20000
     seed     = 123
 
     log_prob = make_rosenbrock(dim=dim, a=a, b=b)
@@ -189,7 +195,9 @@ if __name__ == "__main__":
     for name, s in results.items():
         s_sub = np.asarray(s).reshape(-1, dim)[:, :K]
         fig = corner_plot(s_sub, labels=labels, truths=truths,
-                          truth_1d=truth_1d_r, truth_2d=truth_2d_r,
-                          title=f"{name} — first {K} dims")
+                          truth_1d=truth_1d_r, truth_2d=truth_2d_r)
+                        #   title=f"{name} — first {K} dims")
 
+        fig.savefig(f'figs/rosenbrock_{name}.png')
+        fig.savefig(f'figs/rosenbrock_{name}.pdf')
     plt.show()

@@ -1,6 +1,5 @@
 """
-example_gaussian.py — High-dimensional anisotropic Gaussian benchmark.
-
+manual grid search for MALT optimal integration length and stepsize for kappa=1000 gaussian
 Target:
     log pi(x) = -0.5 x^T Prec x
     where Prec = Q · diag(1/lambda) · Q^T, with `lambda` log-spaced from 1 to
@@ -36,7 +35,7 @@ from affine_invariant_samplers import (
 )
 from affine_invariant_samplers.plotting import corner_plot
 
-
+from matplotlib.lines import Line2D
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Target:  ill-conditioned Gaussian
@@ -71,7 +70,7 @@ def _report(name, samples, cov, info, elapsed):
     grads    = info.get("n_grad_evals")
     grads_s  = f"{grads:>10d}" if grads is not None else f"{'–':>10s}"
     print(f"  {name:<20s}  rel_err(var)={rel_err:6.3f}   "
-          f"accept={accept:5.3f}   min_ESS={float(ess.min()):7.1f}   "
+          f"accept={accept:5.3f}   min_ESS_pergrad={float(ess.min() / info["L"]):7.1f}   "
           f"grad_evals={grads_s}   time={elapsed:5.1f}s")
 
 
@@ -108,11 +107,15 @@ if __name__ == "__main__":
     # tiny initial ensemble covariance.  We disable it and pass a sensible
     # starting step size; DA refines from there.
     t0 = time.time()
-    s, info = sampler_malt(log_prob, init, n_samp, warmup=warmup,
-                                     step_size=0.2, 
-                                     seed=seed, verbose=True)
-    _report("malt", s, cov, info, time.time() - t0)
-    results["malt"] = s
+    for ss in np.arange(1.0,2.0,0.1):
+        for ell in np.arange(10,14,1):
+            s, info = sampler_malt(log_prob, init, n_samp, warmup=warmup,
+                                            step_size=ss, gamma=1.5 * np.sqrt(1/1000),
+                                            L=ell,
+                                            seed=seed, verbose=False, adapt_step_size=False, find_init_step_size=False)
+            _report(f"malt{ss}_{ell}", s, cov, info, time.time() - t0)
+        # results["malt"] = s
+        # malt_gradper = info.get("L")
 
     # t0 = time.time()
     # s, info = sampler_aldi(log_prob, init, n_samp, warmup=warmup,
@@ -128,23 +131,52 @@ if __name__ == "__main__":
     # _report("pickles_unadjusted", s, cov, info, time.time() - t0)
     # results["pickles_unadjusted"] = s
 
-    
-
-    t0 = time.time()
-    s, info = sampler_pickles(log_prob, init, n_samp, warmup=warmup,
-                                     step_size=0.4, 
-                                     seed=seed, verbose=True)
-    _report("pickles", s, cov, info, time.time() - t0)
-    results["pickles"] = s
-
-
     # t0 = time.time()
-    # s, info = sampler_nuts(log_prob, init, n_samp, warmup=warmup,
+    # s, info = sampler_nuts(log_prob, init, n_samp//20, warmup=warmup,
     #                                  step_size=0.4, 
     #                                  seed=seed, verbose=True)
     # _report("nuts", s, cov, info, time.time() - t0)
     # results["nuts"] = s
+    # nuts_gradper = info.get("mean_tree_depth") # manual
+    # nuts_gradper = np.power(2, nuts_gradper) - 1
 
+    # t0 = time.time()
+    # s, info = sampler_pickles(log_prob, init, n_samp, warmup=warmup,
+    #                                  step_size=0.6, 
+    #                                  seed=seed, verbose=True, adapt_L = False)
+    # _report("pickles", s, cov, info, time.time() - t0)
+    # results["pickles"] = s
+    # pickles_gradper = info.get("nominal_L")
+
+   
+
+    # colors = {"malt": "blue",
+    #           "pickles": "green",
+    #           "nuts": "orange"}
+    # gradper = {"malt": malt_gradper}
+    # fig, ax = plt.subplots(figsize = (6,5), dpi=300)
+    # for name, s in results.items():
+    #     for i in np.arange(0, s.shape[0], s.shape[0]//100):
+    #         s_sub = s[:i, :,:]
+    #         flat = jnp.asarray(s_sub).reshape(-1, s_sub.shape[-1])
+    #         var_est  = jnp.var(flat, axis=0)
+    #         var_true = jnp.diag(cov)
+    #         rel_err  = float(jnp.mean(jnp.abs(var_est - var_true) / var_true))
+    #         plt.scatter(i * gradper[name], rel_err, c=colors[name], s=12)
+    
+    # ax.set_yscale("log")
+    # ax.set_xlabel("# gradient evals")
+    # ax.set_ylabel("Relative covariance error")
+
+    # custom_lines = [Line2D([0], [0], color='blue', lw=4),
+    #             Line2D([0], [0], color='green', lw=4),
+    #             Line2D([0], [0], color='orange', lw=4)]
+    # ax.legend(custom_lines, ['MALT', 'PICKLES', 'NUTS'])
+
+    # fig.savefig("figs/relerr_v_iters_gaussian.pdf")
+    # fig.savefig("figs/relerr_v_iters_gaussian.png")
+
+    raise Exception()
     # t0 = time.time()
     # s, info = sampler_chess(log_prob, init, n_samp, warmup=warmup,
     #                                  step_size=0.4, 

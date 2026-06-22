@@ -23,7 +23,8 @@ from affine_invariant_samplers import (
     sampler_aldi,
     sampler_pickles_unadjusted,
     effective_sample_size,
-    sampler_pickles
+    sampler_pickles,
+    sampler_malt
 )
 
 # 
@@ -133,6 +134,7 @@ if __name__ == "__main__":
     # aldi: step_size=0.1 is a reasonable compromise.  Too small and x_even
     # barely migrates off the origin; too large and x_odd becomes unstable.
     # Even so, aldi is expected to show visible bias on Rosenbrock.
+    '''
     t0 = time.time()
     print(f"Unadjusted Langevin on LR  "
           f"n_chains={n_chains}  n_samp={n_samp}  warmup={warmup}")
@@ -141,28 +143,49 @@ if __name__ == "__main__":
                             step_size=4.0, seed=seed, verbose=False)
     _report("aldi",               s, info, time.time() - t0)
     results["aldi"] = s
-
+    '''
     # pickles_unadjusted: its PGN adaptation rescales h by the ensemble
     # gradient norm, so a base step of 0.2 is safe and much larger than
     # what aldi can tolerate.  Expect nearly-correct moments.
-    print(f"pickles  "
-          f"n_chains={n_chains}  n_samp={n_samp}  warmup={warmup}")
-    print("=" * 110)
+    # print(f"pickles  "
+    #       f"n_chains={n_chains}  n_samp={n_samp}  warmup={warmup}")
+    # print("=" * 110)
+    # t0 = time.time()
+    # s, info = sampler_pickles_unadjusted(
+    #     log_prob, init, n_samp, warmup=warmup,
+    #     step_size=4.0, gamma=2.0, seed=seed, verbose=False)
+    # _report("pickles_unadjusted", s, info, time.time() - t0)
+    # results["pickles_unadjusted"] = s
+
+    
+    # t0 = time.time()
+    # s, info = sampler_pickles(log_prob, init, n_samp, warmup=warmup,
+    #                            step_size=4.0, gamma=2.0, seed=seed, verbose=False, adapt_L=False)
+    # _report("pickles", s, info, time.time() - t0)
+    # results["pickles"] = s
+    # print("=" * 110)
+    
+
+    def logistic_loss_stable_unbatched(params):
+        """Uses log-sum-exp trick — avoids overflow in sigmoid."""
+        params_w = params[:15]
+        params_b = params[15:]
+        logits = jnp.squeeze(X @ params_w[:,None]) + params_b # (N, df_len)
+        # log(1 + exp(-logit)) for y=1, log(1 + exp(logit)) for y=0
+        loss = jnp.logaddexp(0, jnp.where(y == 1, -logits, logits))
+
+        regularization = jnp.sum(params**2)
+        return -jnp.mean(loss) - 0.01 * regularization
+
     t0 = time.time()
-    s, info = sampler_pickles_unadjusted(
-        log_prob, init, n_samp, warmup=warmup,
-        step_size=4.0, gamma=2.0, seed=seed, verbose=False)
-    _report("pickles_unadjusted", s, info, time.time() - t0)
-    results["pickles_unadjusted"] = s
+    s, info = sampler_malt(logistic_loss_stable_unbatched, init, n_samp, warmup=warmup,
+                               step_size=1.0, L=36, gamma=2.0, seed=seed, 
+                               verbose=True, find_init_step_size=False, adapt_step_size=True)
+    
 
-
-    t0 = time.time()
-    s, info = sampler_pickles(log_prob, init, n_samp, warmup=warmup,
-                               step_size=4.0, gamma=2.0, seed=seed, verbose=False, adapt_L=False)
-    _report("pickles", s, info, time.time() - t0)
-    results["pickles"] = s
+    _report("malt", s, info, time.time() - t0)
+    results["malt"] = s
     print("=" * 110)
-
 
     # ──────────────────────────────────────────────────────────────────────
     # Plots
